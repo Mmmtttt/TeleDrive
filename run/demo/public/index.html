@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TeleDrive Demo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">TeleDrive Preview</p>
+          <h1>Telegram Cloud Gallery</h1>
+        </div>
+        <div class="status" id="status">连接中</div>
+      </header>
+
+      <section class="stage">
+        <div class="viewer" id="viewer">
+          <div class="empty">等待 Teldrive 媒体</div>
+        </div>
+        <aside class="rail">
+          <div class="rail-head">
+            <span>Recent</span>
+            <button id="refreshBtn" type="button" title="刷新">↻</button>
+          </div>
+          <div class="thumbs" id="thumbs"></div>
+        </aside>
+      </section>
+
+      <footer class="meta" id="meta"></footer>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

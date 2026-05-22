@@ -1,0 +1,12 @@
+services:
+  importer:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: importer
+
+  bridge:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: bridge

@@ -1,0 +1,72 @@
+name: tgcloudbridge-mvp
+
+services:
+  postgres:
+    image: ghcr.io/tgdrive/postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: teldrive
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: postgres
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teldrive -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  teldrive:
+    image: ghcr.io/tgdrive/teldrive:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config.toml:/config.toml:ro
+    ports:
+      - "8787:8080"
+
+  importer:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: importer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CONFIG_PATH: /config.toml
+      IMPORTER_ADDR: 0.0.0.0:8891
+      IMPORT_FOLDER: Telegram Imports
+      DEFAULT_LIMIT: 100
+      POLL_INTERVAL_SECONDS: 0
+    volumes:
+      - ./config.toml:/config.toml:ro
+    ports:
+      - "8891:8891"
+
+  bridge:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: bridge
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      teldrive:
+        condition: service_started
+      importer:
+        condition: service_started
+    environment:
+      CONFIG_PATH: /config.toml
+      BRIDGE_ADDR: 0.0.0.0:8892
+      TELDRIVE_ORIGIN: http://teldrive:8080
+      IMPORTER_ORIGIN: http://importer:8891
+      CATALOG_LIMIT: 100
+    volumes:
+      - ./config.toml:/config.toml:ro
+    ports:
+      - "8892:8892"

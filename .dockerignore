@@ -1,0 +1,11 @@
+.git
+.github
+dist
+release
+run/teldrive/postgres_data
+run/demo/logs
+run/demo/*.log
+third_party
+node_modules
+**/.env
+**/config.toml

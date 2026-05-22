@@ -1,0 +1,70 @@
+name: teledrive
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-ghcr.io/tgdrive/postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-teldrive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-teldrive} -d ${POSTGRES_DB:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  teldrive:
+    image: ${TELDRIVE_IMAGE:-ghcr.io/tgdrive/teldrive:latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config.toml:/config.toml:ro
+    ports:
+      - "${TELDRIVE_PORT:-8787}:8080"
+
+  importer:
+    image: teledrive-importer:${TELEDRIVE_VERSION:-local}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CONFIG_PATH: /config.toml
+      IMPORTER_ADDR: 0.0.0.0:8891
+      IMPORT_FOLDER: ${IMPORT_FOLDER:-Telegram Imports}
+      DEFAULT_LIMIT: ${DEFAULT_LIMIT:-100}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-0}
+    volumes:
+      - ./config.toml:/config.toml:ro
+    ports:
+      - "${IMPORTER_PORT:-8891}:8891"
+
+  bridge:
+    image: teledrive-bridge:${TELEDRIVE_VERSION:-local}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      teldrive:
+        condition: service_started
+      importer:
+        condition: service_started
+    environment:
+      CONFIG_PATH: /config.toml
+      BRIDGE_ADDR: 0.0.0.0:8892
+      TELDRIVE_ORIGIN: http://teldrive:8080
+      IMPORTER_ORIGIN: http://importer:8891
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN:-}
+      CATALOG_LIMIT: ${CATALOG_LIMIT:-100}
+    volumes:
+      - ./config.toml:/config.toml:ro
+    ports:
+      - "${BRIDGE_PORT:-8892}:8892"
+
+volumes:
+  postgres_data:

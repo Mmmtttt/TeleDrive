@@ -1,0 +1,153 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without leading v
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.24.x"
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  native:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+            artifact: native-windows-amd64
+          - goos: linux
+            goarch: amd64
+            ext: ""
+            artifact: native-linux-amd64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go mod download
+      - run: go test ./cmd/...
+      - name: Build native binaries
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p native/bin
+          go build -trimpath -ldflags="-s -w" -o "native/bin/teledrive-importer${{ matrix.ext }}" ./cmd/teledrive-importer
+          go build -trimpath -ldflags="-s -w" -o "native/bin/teledrive-bridge${{ matrix.ext }}" ./cmd/teledrive-bridge
+          echo "${{ needs.version.outputs.version }}" > native/VERSION
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: native
+
+  docker-offline-base:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build TeleDrive images
+        run: |
+          docker build --target importer -t "teledrive-importer:${{ needs.version.outputs.version }}" .
+          docker build --target bridge -t "teledrive-bridge:${{ needs.version.outputs.version }}" .
+      - name: Pull upstream runtime images
+        run: |
+          docker pull ghcr.io/tgdrive/teldrive:latest
+          docker pull ghcr.io/tgdrive/postgres:17-alpine
+      - name: Assemble offline base
+        run: |
+          mkdir -p docker-base/images
+          cp deploy/docker/docker-compose.yml docker-base/
+          cp deploy/docker/config.template.toml docker-base/
+          cp deploy/docker/.env.example docker-base/
+          cp deploy/package/start.ps1 docker-base/
+          cp deploy/package/stop.ps1 docker-base/
+          cp deploy/package/start.sh docker-base/
+          cp deploy/package/stop.sh docker-base/
+          chmod +x docker-base/start.sh docker-base/stop.sh
+          echo "${{ needs.version.outputs.version }}" > docker-base/VERSION
+          docker save -o docker-base/images/teledrive-importer.tar "teledrive-importer:${{ needs.version.outputs.version }}"
+          docker save -o docker-base/images/teledrive-bridge.tar "teledrive-bridge:${{ needs.version.outputs.version }}"
+          docker save -o docker-base/images/teldrive.tar ghcr.io/tgdrive/teldrive:latest
+          docker save -o docker-base/images/postgres.tar ghcr.io/tgdrive/postgres:17-alpine
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-offline-base
+          path: docker-base
+
+  packages:
+    needs:
+      - version
+      - native
+      - docker-offline-base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Build release archives
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          mkdir -p packages out
+
+          mkdir -p packages/teledrive-windows-amd64/bin
+          cp -R artifacts/docker-offline-base/. packages/teledrive-windows-amd64/
+          cp -R artifacts/native-windows-amd64/bin/* packages/teledrive-windows-amd64/bin/
+          (cd packages && zip -r "../out/teledrive-windows-amd64-$VERSION.zip" teledrive-windows-amd64)
+
+          mkdir -p packages/teledrive-linux-amd64/bin
+          cp -R artifacts/docker-offline-base/. packages/teledrive-linux-amd64/
+          cp -R artifacts/native-linux-amd64/bin/* packages/teledrive-linux-amd64/bin/
+          chmod +x packages/teledrive-linux-amd64/bin/* packages/teledrive-linux-amd64/start.sh packages/teledrive-linux-amd64/stop.sh
+          (cd packages/teledrive-linux-amd64 && tar -czf "../../out/teledrive-linux-amd64-$VERSION.tar.gz" .)
+
+          mkdir -p packages/teledrive-docker-offline
+          cp -R artifacts/docker-offline-base/. packages/teledrive-docker-offline/
+          chmod +x packages/teledrive-docker-offline/start.sh packages/teledrive-docker-offline/stop.sh
+          (cd packages/teledrive-docker-offline && tar -czf "../../out/teledrive-docker-offline-$VERSION.tar.gz" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-archives
+          path: out/*
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*

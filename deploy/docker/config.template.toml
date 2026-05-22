@@ -1,0 +1,113 @@
+[cache]
+max-size = 67108864
+
+[cronjobs]
+enable = true
+clean-files-interval = "1h"
+clean-uploads-interval = "12h"
+folder-size-interval = "2h"
+locker-instance = "teledrive-cron"
+
+[db]
+data-source = "postgres://teldrive:{{POSTGRES_PASSWORD}}@postgres:5432/postgres?sslmode=disable"
+log-level = "warn"
+prepare-stmt = true
+
+[db.pool]
+enable = true
+max-idle-connections = 10
+max-lifetime = "10m"
+max-open-connections = 10
+
+[events]
+poll-interval = "10s"
+db-workers = 4
+db-buffer-size = 256
+deduplication-ttl = "5s"
+
+[jwt]
+secret = "{{JWT_SECRET}}"
+session-time = "30d"
+allowed-users = []
+
+[log]
+level = "info"
+file = ""
+
+[log.http]
+enabled = true
+log-queries = false
+sanitize-queries = true
+max-query-length = 100
+log-user-agent = true
+log-request-body-size = true
+log-response-size = true
+skip-paths = ["/health", "/metrics"]
+
+[log.db]
+level = "warn"
+slow-threshold = "1s"
+ignore-record-not-found = true
+log-sql = false
+
+[log.tg]
+enabled = false
+level = "warn"
+
+[redis]
+addr = ""
+password = ""
+pool-size = 10
+min-idle-conns = 5
+max-idle-conns = 10
+conn-max-idle-time = "5m"
+conn-max-lifetime = "1h"
+
+[server]
+enable-pprof = false
+graceful-shutdown = "10s"
+port = 8080
+read-timeout = "1h"
+write-timeout = "1h"
+
+[tg]
+app-hash = "{{TG_APP_HASH}}"
+app-id = {{TG_APP_ID}}
+app-version = "6.1.4 K"
+auto-channel-create = true
+channel-limit = 500000
+device-model = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/116.0"
+enable-logging = false
+lang-code = "en"
+lang-pack = "webk"
+ntp = false
+pool-size = 8
+proxy = ""
+rate = 100
+rate-burst = 5
+rate-limit = true
+reconnect-timeout = "5m"
+session-instance = "teledrive"
+system-lang-code = "en-US"
+system-version = "Win32"
+
+[tg.session]
+type = "postgres"
+key = "session"
+
+[tg.session.bolt]
+path = ""
+timeout = "1s"
+no-grow-sync = false
+
+[tg.stream]
+buffers = 8
+chunk-timeout = "20s"
+concurrency = 1
+bots-limit = 0
+
+[tg.uploads]
+encryption-key = ""
+max-retries = 10
+retention = "7d"
+threads = 8
