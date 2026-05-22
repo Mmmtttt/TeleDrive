@@ -16,6 +16,7 @@ permissions:
 
 env:
   GO_VERSION: "1.24.x"
+  TELDRIVE_UI_ASSET: "https://github.com/tgdrive/teldrive-ui/releases/download/latest/teldrive-ui.zip"
 
 jobs:
   version:
@@ -36,21 +37,9 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-  native:
+  windows-native:
     needs: version
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: windows
-            goarch: amd64
-            ext: .exe
-            artifact: native-windows-amd64
-          - goos: linux
-            goarch: amd64
-            ext: ""
-            artifact: native-linux-amd64
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,21 +48,127 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      - run: go mod download
-      - run: go test ./cmd/...
-      - name: Build native binaries
+      - name: Install PostgreSQL runtime
+        shell: pwsh
+        run: |
+          choco install postgresql17 --params "/Password:postgres" -y --no-progress
+      - name: Prepare native Teldrive source
+        shell: pwsh
+        run: ./scripts/prepare-teldrive-native.ps1
+      - name: Build TeleDrive native binaries
+        shell: pwsh
         env:
           CGO_ENABLED: "0"
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          GOOS: windows
+          GOARCH: amd64
         run: |
+          go test ./cmd/...
+          New-Item -ItemType Directory -Force native/bin | Out-Null
+          go build -trimpath -ldflags="-s -w" -o native/bin/teledrive-importer.exe ./cmd/teledrive-importer
+          go build -trimpath -ldflags="-s -w" -o native/bin/teledrive-bridge.exe ./cmd/teledrive-bridge
+          go build -trimpath -ldflags="-s -w" -o native/bin/teledrive-launcher.exe ./cmd/teledrive-launcher
+      - name: Build Teldrive native binary
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          Push-Location third_party/teldrive
+          go run scripts/extract.go -url $env:TELDRIVE_UI_ASSET -output ui/dist
+          go generate ./...
+          $version = "${{ needs.version.outputs.version }}"
+          $commit = (git rev-parse --short HEAD)
+          $module = (go list -m)
+          $ldflags = "-s -w -X $module/internal/version.Version=$version -X $module/internal/version.CommitSHA=$commit"
+          go build -trimpath -ldflags="$ldflags" -o ../../native/bin/teldrive.exe .
+          Pop-Location
+      - name: Assemble native package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force native/runtime/postgres native/config native/data native/logs | Out-Null
+          $pgRoot = Get-ChildItem "C:\Program Files\PostgreSQL" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $pgRoot) { throw "PostgreSQL installation was not found" }
+          Copy-Item -Recurse -Force "$($pgRoot.FullName)\bin" native/runtime/postgres/
+          Copy-Item -Recurse -Force "$($pgRoot.FullName)\lib" native/runtime/postgres/
+          Copy-Item -Recurse -Force "$($pgRoot.FullName)\share" native/runtime/postgres/
+          Copy-Item deploy/native/start.ps1 native/
+          Copy-Item deploy/native/stop.ps1 native/
+          Copy-Item deploy/native/README.md native/
+          Copy-Item deploy/native/config.template.toml native/config/
+          Set-Content -Encoding ASCII native/VERSION "${{ needs.version.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teledrive-windows-native-amd64
+          path: native
+
+  linux-native:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Install PostgreSQL runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql postgresql-contrib
+      - name: Prepare native Teldrive source
+        shell: pwsh
+        run: ./scripts/prepare-teldrive-native.ps1
+      - name: Build TeleDrive native binaries
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go test ./cmd/...
           mkdir -p native/bin
-          go build -trimpath -ldflags="-s -w" -o "native/bin/teledrive-importer${{ matrix.ext }}" ./cmd/teledrive-importer
-          go build -trimpath -ldflags="-s -w" -o "native/bin/teledrive-bridge${{ matrix.ext }}" ./cmd/teledrive-bridge
+          go build -trimpath -ldflags="-s -w" -o native/bin/teledrive-importer ./cmd/teledrive-importer
+          go build -trimpath -ldflags="-s -w" -o native/bin/teledrive-bridge ./cmd/teledrive-bridge
+          go build -trimpath -ldflags="-s -w" -o native/bin/teledrive-launcher ./cmd/teledrive-launcher
+      - name: Build Teldrive native binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          cd third_party/teldrive
+          go run scripts/extract.go -url "$TELDRIVE_UI_ASSET" -output ui/dist
+          go generate ./...
+          VERSION="${{ needs.version.outputs.version }}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          MODULE="$(go list -m)"
+          go build -trimpath -ldflags="-s -w -X $MODULE/internal/version.Version=$VERSION -X $MODULE/internal/version.CommitSHA=$COMMIT" -o ../../native/bin/teldrive .
+      - name: Assemble native package
+        run: |
+          set -euo pipefail
+          mkdir -p native/runtime/postgres native/config native/data native/logs
+          PG_VERSION="$(ls /usr/lib/postgresql | sort -Vr | head -n 1)"
+          cp -R "/usr/lib/postgresql/$PG_VERSION/bin" native/runtime/postgres/
+          cp -R "/usr/lib/postgresql/$PG_VERSION/lib" native/runtime/postgres/
+          cp -R "/usr/share/postgresql/$PG_VERSION" native/runtime/postgres/share
+          mkdir -p native/runtime/postgres/libdeps
+          for bin in native/runtime/postgres/bin/* native/runtime/postgres/lib/*.so*; do
+            if [ -f "$bin" ]; then
+              ldd "$bin" 2>/dev/null | awk '/=>/ {print $3} /^\\// {print $1}' | while read -r dep; do
+                if [ -f "$dep" ]; then cp -n "$dep" native/runtime/postgres/libdeps/ || true; fi
+              done
+            fi
+          done
+          cp deploy/native/start.sh native/
+          cp deploy/native/stop.sh native/
+          cp deploy/native/README.md native/
+          cp deploy/native/config.template.toml native/config/
+          chmod +x native/bin/* native/start.sh native/stop.sh
           echo "${{ needs.version.outputs.version }}" > native/VERSION
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: teledrive-linux-native-amd64
           path: native
 
   docker-offline-base:
@@ -109,13 +204,14 @@ jobs:
           docker save -o docker-base/images/postgres.tar ghcr.io/tgdrive/postgres:17-alpine
       - uses: actions/upload-artifact@v4
         with:
-          name: docker-offline-base
+          name: teledrive-docker-offline-base
           path: docker-base
 
   packages:
     needs:
       - version
-      - native
+      - windows-native
+      - linux-native
       - docker-offline-base
     runs-on: ubuntu-latest
     steps:
@@ -125,23 +221,15 @@ jobs:
       - name: Build release archives
         run: |
           VERSION="${{ needs.version.outputs.version }}"
-          mkdir -p packages out
+          mkdir -p out
 
-          mkdir -p packages/teledrive-windows-amd64/bin
-          cp -R artifacts/docker-offline-base/. packages/teledrive-windows-amd64/
-          cp -R artifacts/native-windows-amd64/bin/* packages/teledrive-windows-amd64/bin/
-          (cd packages && zip -r "../out/teledrive-windows-amd64-$VERSION.zip" teledrive-windows-amd64)
+          (cd artifacts/teledrive-windows-native-amd64 && zip -r "../../out/teledrive-windows-native-amd64-$VERSION.zip" .)
 
-          mkdir -p packages/teledrive-linux-amd64/bin
-          cp -R artifacts/docker-offline-base/. packages/teledrive-linux-amd64/
-          cp -R artifacts/native-linux-amd64/bin/* packages/teledrive-linux-amd64/bin/
-          chmod +x packages/teledrive-linux-amd64/bin/* packages/teledrive-linux-amd64/start.sh packages/teledrive-linux-amd64/stop.sh
-          (cd packages/teledrive-linux-amd64 && tar -czf "../../out/teledrive-linux-amd64-$VERSION.tar.gz" .)
+          chmod +x artifacts/teledrive-linux-native-amd64/bin/* artifacts/teledrive-linux-native-amd64/start.sh artifacts/teledrive-linux-native-amd64/stop.sh
+          (cd artifacts/teledrive-linux-native-amd64 && tar -czf "../../out/teledrive-linux-native-amd64-$VERSION.tar.gz" .)
 
-          mkdir -p packages/teledrive-docker-offline
-          cp -R artifacts/docker-offline-base/. packages/teledrive-docker-offline/
-          chmod +x packages/teledrive-docker-offline/start.sh packages/teledrive-docker-offline/stop.sh
-          (cd packages/teledrive-docker-offline && tar -czf "../../out/teledrive-docker-offline-$VERSION.tar.gz" .)
+          chmod +x artifacts/teledrive-docker-offline-base/start.sh artifacts/teledrive-docker-offline-base/stop.sh
+          (cd artifacts/teledrive-docker-offline-base && tar -czf "../../out/teledrive-docker-offline-$VERSION.tar.gz" .)
       - uses: actions/upload-artifact@v4
         with:
           name: release-archives

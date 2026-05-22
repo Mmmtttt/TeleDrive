@@ -50,11 +50,13 @@ Invoke-RestMethod http://127.0.0.1:8892/v1/catalog/items
 
 GitHub Actions builds three release artifacts:
 
-- `teledrive-windows-amd64-<version>.zip`
-- `teledrive-linux-amd64-<version>.tar.gz`
+- `teledrive-windows-native-amd64-<version>.zip`
+- `teledrive-linux-native-amd64-<version>.tar.gz`
 - `teledrive-docker-offline-<version>.tar.gz`
 
-The Windows and Linux archives include native `teledrive-importer` and `teledrive-bridge` binaries plus the offline Docker stack. The Docker offline archive includes all container images used by the full stack:
+The Windows and Linux native archives include `teldrive`, `teledrive-importer`, `teledrive-bridge`, `teledrive-launcher`, and a bundled PostgreSQL runtime. They are intended to run without Docker, Go, Node.js, or a manually installed database.
+
+The Docker offline archive includes all container images used by the full stack:
 
 - `ghcr.io/tgdrive/postgres:17-alpine`
 - `ghcr.io/tgdrive/teldrive:latest`
@@ -71,7 +73,7 @@ The full stack is one-command after extraction:
 ./start.sh
 ```
 
-Docker or a compatible container runtime is still required for the full Teldrive + PostgreSQL stack. The package does not need Go, Node.js, PostgreSQL installers, or internet access at deploy time when the offline image archive is used.
+Docker or a compatible container runtime is required only for the Docker offline package. It does not need Go, Node.js, PostgreSQL installers, or internet access at deploy time when the offline image archive is used.
 
 ## Build Locally
 
@@ -86,6 +88,8 @@ Linux:
 ```sh
 VERSION=local TARGET=linux INCLUDE_DOCKER_IMAGES=1 ./build/package.sh
 ```
+
+Native no-Docker packages are built in GitHub Actions because they bundle OS-specific PostgreSQL runtimes.
 
 ## Publish
 
