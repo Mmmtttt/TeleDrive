@@ -169,8 +169,14 @@ jobs:
           mkdir -p native/runtime/postgres/libdeps
           for bin in native/runtime/postgres/bin/* native/runtime/postgres/lib/*.so*; do
             if [ -f "$bin" ]; then
-              (ldd "$bin" 2>/dev/null || true) | awk '/=>/ {print $3} /^\\// {print $1}' | while read -r dep; do
-                if [ -f "$dep" ]; then cp -n "$dep" native/runtime/postgres/libdeps/ || true; fi
+              (ldd "$bin" 2>/dev/null || true) | while read -r first second third rest; do
+                dep=""
+                if [ "${first#/}" != "$first" ]; then
+                  dep="$first"
+                elif [ "$second" = "=>" ]; then
+                  dep="$third"
+                fi
+                if [ -n "$dep" ] && [ -f "$dep" ]; then cp -n "$dep" native/runtime/postgres/libdeps/ || true; fi
               done
             fi
           done
