@@ -63,7 +63,7 @@ jobs:
           GOARCH: amd64
         run: |
           go test ./cmd/...
-          New-Item -ItemType Directory -Force native/bin | Out-Null
+          New-Item -ItemType Directory -Force -Path native/bin | Out-Null
           go build -trimpath -ldflags="-s -w" -o native/bin/teledrive-importer.exe ./cmd/teledrive-importer
           go build -trimpath -ldflags="-s -w" -o native/bin/teledrive-bridge.exe ./cmd/teledrive-bridge
           go build -trimpath -ldflags="-s -w" -o native/bin/teledrive-launcher.exe ./cmd/teledrive-launcher
@@ -86,12 +86,26 @@ jobs:
       - name: Assemble native package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force native/runtime/postgres native/config native/data native/logs | Out-Null
-          $pgRoot = Get-ChildItem "C:\Program Files\PostgreSQL" -Directory | Sort-Object Name -Descending | Select-Object -First 1
-          if (-not $pgRoot) { throw "PostgreSQL installation was not found" }
-          Copy-Item -Recurse -Force "$($pgRoot.FullName)\bin" native/runtime/postgres/
-          Copy-Item -Recurse -Force "$($pgRoot.FullName)\lib" native/runtime/postgres/
-          Copy-Item -Recurse -Force "$($pgRoot.FullName)\share" native/runtime/postgres/
+          New-Item -ItemType Directory -Force -Path native/runtime/postgres, native/config, native/data, native/logs | Out-Null
+          $pgCtl = Get-Command pg_ctl.exe -ErrorAction SilentlyContinue
+          if ($pgCtl) {
+            $pgRootPath = Split-Path -Parent (Split-Path -Parent $pgCtl.Source)
+          } elseif (Test-Path "$env:ProgramFiles\PostgreSQL") {
+            $pgRootPath = (Get-ChildItem "$env:ProgramFiles\PostgreSQL" -Directory | Sort-Object Name -Descending | Select-Object -First 1).FullName
+          } else {
+            throw "PostgreSQL installation was not found"
+          }
+          Write-Host "PostgreSQL root: $pgRootPath"
+          foreach ($dir in @("bin", "lib", "share")) {
+            $source = Join-Path $pgRootPath $dir
+            if (-not (Test-Path $source)) {
+              throw "Missing PostgreSQL runtime directory: $source"
+            }
+            Copy-Item -Recurse -Force $source native/runtime/postgres/
+          }
+          if (-not (Test-Path native/runtime/postgres/bin/pg_ctl.exe)) {
+            throw "Packaged PostgreSQL runtime is missing bin/pg_ctl.exe"
+          }
           Copy-Item deploy/native/start.ps1 native/
           Copy-Item deploy/native/stop.ps1 native/
           Copy-Item deploy/native/README.md native/
@@ -155,7 +169,7 @@ jobs:
           mkdir -p native/runtime/postgres/libdeps
           for bin in native/runtime/postgres/bin/* native/runtime/postgres/lib/*.so*; do
             if [ -f "$bin" ]; then
-              ldd "$bin" 2>/dev/null | awk '/=>/ {print $3} /^\\// {print $1}' | while read -r dep; do
+              (ldd "$bin" 2>/dev/null || true) | awk '/=>/ {print $3} /^\\// {print $1}' | while read -r dep; do
                 if [ -f "$dep" ]; then cp -n "$dep" native/runtime/postgres/libdeps/ || true; fi
               done
             fi
