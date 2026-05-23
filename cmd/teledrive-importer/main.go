@@ -582,6 +582,10 @@ func mediaFromMessage(msg *tg.Message, convertPhotos bool) (mediaCandidate, bool
 		}
 		name := documentName(doc, fmt.Sprintf("document-%d", msg.ID))
 		mimeType := nonEmpty(doc.MimeType, detectMimeFromName(name))
+		if documentHasVideoAttribute(doc) {
+			mimeType = normalizeVideoMime(mimeType)
+			name = ensureExtension(name, ".mp4")
+		}
 		return mediaCandidate{
 			OriginalMessageID: msg.ID,
 			ImportedMessageID: msg.ID,
@@ -786,6 +790,29 @@ func documentName(doc *tg.Document, fallbackBase string) string {
 	}
 	ext := extensionForMime(doc.MimeType)
 	return sanitizeName(fallbackBase + ext)
+}
+
+func documentHasVideoAttribute(doc *tg.Document) bool {
+	for _, attr := range doc.Attributes {
+		if _, ok := attr.(*tg.DocumentAttributeVideo); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeVideoMime(mimeType string) string {
+	if mimeType == "" || strings.EqualFold(mimeType, "application/octet-stream") {
+		return "video/mp4"
+	}
+	return mimeType
+}
+
+func ensureExtension(name, ext string) string {
+	if filepath.Ext(name) != "" {
+		return name
+	}
+	return sanitizeName(name + ext)
 }
 
 func bestPhotoSize(photo *tg.Photo) (string, int64, bool) {
