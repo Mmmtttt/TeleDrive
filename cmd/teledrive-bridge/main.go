@@ -26,14 +26,15 @@ type appConfig struct {
 }
 
 type server struct {
-	db              *pgxpool.Pool
-	addr            string
-	teldriveOrigin  string
-	importerOrigin  string
-	token           string
-	catalogLimit    int
-	mediaHTTPClient *http.Client
-	apiHTTPClient   *http.Client
+	db               *pgxpool.Pool
+	addr             string
+	teldriveOrigin   string
+	importerOrigin   string
+	token            string
+	catalogLimit     int
+	mediaHTTPClient  *http.Client
+	apiHTTPClient    *http.Client
+	importHTTPClient *http.Client
 }
 
 type catalogItem struct {
@@ -46,6 +47,21 @@ type catalogItem struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	MediaURL  string    `json:"media_url"`
+}
+
+type treeItem struct {
+	ID        string    `json:"id"`
+	ParentID  string    `json:"parent_id,omitempty"`
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	Type      string    `json:"type"`
+	MimeType  string    `json:"mime_type"`
+	Size      int64     `json:"size"`
+	Category  string    `json:"category"`
+	Kind      string    `json:"kind"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	MediaURL  string    `json:"media_url,omitempty"`
 }
 
 func main() {
@@ -80,12 +96,16 @@ func main() {
 		apiHTTPClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
+		importHTTPClient: &http.Client{
+			Timeout: 0,
+		},
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /api/catalog", s.requireAuth(s.catalog))
 	mux.HandleFunc("GET /v1/catalog/items", s.requireAuth(s.catalog))
+	mux.HandleFunc("GET /v1/tree", s.requireAuth(s.tree))
 	mux.HandleFunc("GET /media/", s.requireAuth(s.legacyMedia))
 	mux.HandleFunc("GET /v1/files/", s.requireAuth(s.fileContent))
 	mux.HandleFunc("HEAD /v1/files/", s.requireAuth(s.fileContent))
@@ -181,6 +201,92 @@ func (s *server) catalog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
+		"count": len(items),
+		"items": items,
+	})
+}
+
+func (s *server) tree(w http.ResponseWriter, r *http.Request) {
+	root := normalizeTreeRoot(r.URL.Query().Get("root"))
+	limit := 10000
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 50000 {
+			limit = parsed
+		}
+	}
+
+	rows, err := s.db.Query(r.Context(), `
+		select
+			id,
+			parent_id,
+			name,
+			path,
+			type,
+			mime_type,
+			size,
+			category,
+			created_at,
+			updated_at
+		from (
+			select
+				f.id::text as id,
+				coalesce(f.parent_id::text, '') as parent_id,
+				f.name as name,
+				teldrive.get_path_from_file_id(f.id) as path,
+				coalesce(f.type, '') as type,
+				coalesce(f.mime_type, '') as mime_type,
+				coalesce(f.size, 0) as size,
+				coalesce(f.category, '') as category,
+				f.created_at,
+				f.updated_at
+			from teldrive.files f
+			where f.status = 'active'
+		) items
+		where $1 = '/'
+		   or path = $1
+		   or path like $1 || '/%'
+		order by path asc
+		limit $2
+	`, root, limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	items := make([]treeItem, 0)
+	for rows.Next() {
+		var item treeItem
+		if err := rows.Scan(
+			&item.ID,
+			&item.ParentID,
+			&item.Name,
+			&item.Path,
+			&item.Type,
+			&item.MimeType,
+			&item.Size,
+			&item.Category,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if item.Type == "file" {
+			item.Kind = mediaKind(item.Category, item.MimeType)
+			item.MediaURL = "/v1/files/" + url.PathEscape(item.ID) + "/content?name=" + url.QueryEscape(item.Name)
+		} else {
+			item.Kind = "folder"
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"root":  root,
 		"count": len(items),
 		"items": items,
 	})
@@ -295,13 +401,20 @@ func (s *server) proxyImporterStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) proxyImporterImport(w http.ResponseWriter, r *http.Request) {
-	s.proxyImporter(w, r, http.MethodPost, "/api/import")
+	s.proxyImporterWithClient(w, r, http.MethodPost, "/api/import", s.importHTTPClient)
 }
 
 func (s *server) proxyImporter(w http.ResponseWriter, r *http.Request, method string, path string) {
+	s.proxyImporterWithClient(w, r, method, path, s.apiHTTPClient)
+}
+
+func (s *server) proxyImporterWithClient(w http.ResponseWriter, r *http.Request, method string, path string, client *http.Client) {
 	if s.importerOrigin == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "IMPORTER_ORIGIN is not configured"})
 		return
+	}
+	if client == nil {
+		client = s.apiHTTPClient
 	}
 	req, err := http.NewRequestWithContext(r.Context(), method, s.importerOrigin+path, r.Body)
 	if err != nil {
@@ -309,7 +422,7 @@ func (s *server) proxyImporter(w http.ResponseWriter, r *http.Request, method st
 		return
 	}
 	copyRequestHeader(req.Header, r.Header, "Content-Type")
-	resp, err := s.apiHTTPClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -365,7 +478,27 @@ func mediaKind(category string, mimeType string) string {
 	if category == "video" || strings.HasPrefix(strings.ToLower(mimeType), "video/") {
 		return "video"
 	}
-	return "image"
+	if category == "image" || strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		return "image"
+	}
+	return "file"
+}
+
+func normalizeTreeRoot(raw string) string {
+	root := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	if root == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(root, "/") {
+		root = "/" + root
+	}
+	for strings.Contains(root, "//") {
+		root = strings.ReplaceAll(root, "//", "/")
+	}
+	if root != "/" {
+		root = strings.TrimRight(root, "/")
+	}
+	return root
 }
 
 func copyRequestHeader(dst http.Header, src http.Header, name string) {
